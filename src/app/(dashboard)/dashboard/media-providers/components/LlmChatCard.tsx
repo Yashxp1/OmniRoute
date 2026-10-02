@@ -13,11 +13,8 @@ import { cn } from "@/shared/utils/cn";
 import { useApiKey } from "../../providers/hooks/useApiKey";
 import { useProviderModels } from "../../providers/hooks/useProviderModels";
 import { getProviderAlias } from "@/shared/constants/providers";
-import {
-  loadPlaygroundMessages,
-  playgroundMessagesStorageKey,
-  savePlaygroundMessages,
-} from "./llmChatStorage";
+import { playgroundMessagesStorageKey } from "./llmChatStorage";
+import { usePersistedPlaygroundMessages } from "./usePersistedPlaygroundMessages";
 
 const ENDPOINT = "/api/v1/chat/completions";
 
@@ -174,40 +171,18 @@ export function LlmChatCard({
 
   const storageKey = playgroundMessagesStorageKey(providerId, selectedKey);
 
-  const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
-  const messagesRef = useRef<Message[]>(messages);
-
-  // The conversation belongs to the storage key (provider × selected API key): reload it
-  // whenever the key changes — adjusting state during render, so `messages` and the key
-  // it belongs to always commit together and the persist effect below can never write one
-  // key's conversation into another key's slot.
-  const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  if (loadedKey !== storageKey) {
-    setLoadedKey(storageKey);
-    setMessages(loadPlaygroundMessages(storageKey));
-  }
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  // Key change / unmount mid-stream: the fetch is aborted, so keep what already arrived.
-  useEffect(() => {
-    return () => {
-      if (abortRef.current) {
-        abortRef.current.abort();
-        savePlaygroundMessages(storageKey, messagesRef.current);
-      }
-    };
-  }, [storageKey]);
-
-  // Persist only once a turn is complete — not on every streamed token.
-  useEffect(() => {
-    if (streaming) return;
-    savePlaygroundMessages(storageKey, messages);
-  }, [messages, storageKey, streaming]);
+  const abortInFlight = useCallback(() => {
+    const controller = abortRef.current;
+    controller?.abort();
+    return controller !== null;
+  }, []);
+  const [messages, setMessages] = usePersistedPlaygroundMessages(
+    storageKey,
+    streaming,
+    abortInFlight
+  );
 
   const [input, setInput] = useState<string>("");
   const [stats, setStats] = useState<Stats | null>(null);
@@ -387,7 +362,7 @@ export function LlmChatCard({
       // Refocus textarea so user can keep typing
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
-  }, [input, streaming, selectedKey, keys, providerId, qualifiedModel, messages, t]);
+  }, [input, streaming, selectedKey, keys, providerId, qualifiedModel, messages, setMessages, t]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -404,7 +379,7 @@ export function LlmChatCard({
     if (streaming) abortRef.current?.abort();
     setMessages([]);
     setStats(null);
-  }, [streaming]);
+  }, [streaming, setMessages]);
 
   useImperativeHandle(
     controlsRef,
